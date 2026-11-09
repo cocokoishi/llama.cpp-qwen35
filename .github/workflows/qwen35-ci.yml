@@ -136,3 +136,45 @@ jobs:
           test -x build-full/bin/llama-bench
           test -x build-full/bin/llama-quantize
           ctest --test-dir build-full -N
+
+
+  compile-time-comparison:
+    name: Fair clean compile-time comparison (libllama)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prepare identical original and Qwen3.5-only library configurations
+        run: |
+          git worktree add --detach original 7d7f0287530bc8981690f361d8c1627dbae1c99a
+          for source in original .; do
+            out="build-fair-original"
+            if [ "$source" = "." ]; then out="build-fair-qwen35"; fi
+            cmake -S "$source" -B "$out" -DCMAKE_BUILD_TYPE=Release \
+              -DGGML_NATIVE=OFF -DGGML_CCACHE=OFF \
+              -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_COMMON=OFF \
+              -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_TESTS=OFF \
+              -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
+              -DLLAMA_BUILD_APP=OFF
+          done
+      - name: Time fresh builds of exactly the same libllama target
+        run: |
+          python3 - <<'PY'
+          import json, subprocess, time
+          results = {}
+          for label, directory in [("original", "build-fair-original"), ("qwen35-only", "build-fair-qwen35")]:
+              start = time.perf_counter()
+              subprocess.run(["cmake", "--build", directory, "--parallel", "2", "--target", "llama"], check=True)
+              results[label] = round(time.perf_counter() - start, 2)
+          print("Clean identical-target elapsed seconds:", json.dumps(results, sort_keys=True))
+          print("Compilation improvement:", round(100 * (1 - results["qwen35-only"] / results["original"]), 2), "%")
+          assert results["original"] > 0 and results["qwen35-only"] > 0
+          with open("compile-times.json", "w") as out:
+              json.dump(results, out, indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clean-libllama-build-times
+          path: compile-times.json
