@@ -107,3 +107,32 @@ jobs:
             *-output.txt
             *-log.txt
             bench-*.txt
+
+  full-project-build:
+    name: Full CMake build
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure all default executable targets
+        run: |
+          cmake -S . -B build-full -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_NATIVE=OFF -DGGML_CCACHE=OFF \
+            -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_UI=OFF \
+            -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON \
+            -DLLAMA_BUILD_APP=ON
+      - name: Build the full project, not just selected inference targets
+        run: |
+          /usr/bin/time -v cmake --build build-full --parallel 2
+      - name: Check full-build binaries and discover CTest tests
+        run: |
+          test -x build-full/bin/llama-completion
+          test -x build-full/bin/llama-server
+          test -x build-full/bin/llama-bench
+          test -x build-full/bin/llama-quantize
+          ctest --test-dir build-full -N
