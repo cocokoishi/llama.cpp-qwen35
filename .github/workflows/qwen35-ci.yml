@@ -73,7 +73,7 @@ jobs:
             echo "ERROR: foreign architecture was accepted" >&2
             exit 1
           fi
-          grep -qi "unsupported model architecture" foreign-log.txt
+          grep -Eqi "(unknown|unsupported) model architecture" foreign-log.txt
       - name: Build unmodified original for token-level regression
         run: |
           git worktree add --detach original "7d7f0287530bc8981690f361d8c1627dbae1c99a"
