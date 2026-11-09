@@ -239,26 +239,7 @@ llama_context::llama_context(
     cparams.ctx_other = nullptr;
 
     // TODO: more generic
-    if (model.arch == LLM_ARCH_GEMMA4_ASSISTANT) {
-        if (params.ctx_other == nullptr) {
-            // TODO: change from runtime_error to llama_exception to avoid printing error message
-            throw std::runtime_error("Gemma4Assistant requires ctx_other to be set (this warning is normal during memory fitting)");
-        }
 
-        cparams.ctx_other = params.ctx_other;
-    }
-
-    if (model.arch == LLM_ARCH_EAGLE3 || model.arch == LLM_ARCH_DFLASH) {
-        if (model.tok_embd == nullptr || model.output == nullptr) {
-            if (params.ctx_other == nullptr) {
-                throw std::runtime_error(model.arch_name() + " requires ctx_other to be set (this warning is normal during memory fitting)");
-            }
-            cparams.ctx_other = params.ctx_other;
-        } else if (model.arch == LLM_ARCH_DFLASH) {
-            // used to read the target's layer input device buffer
-            cparams.ctx_other = params.ctx_other;
-        }
-    }
 
     if (cparams.rope_scaling_type == LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED) {
         cparams.rope_scaling_type = hparams.rope_scaling_type_train;
@@ -289,9 +270,6 @@ llama_context::llama_context(
             // [TAG_DEEPSEEK2_YARN_LOG_MUL_FIX]
             // special-case DEEPSEEK v2:
             // https://huggingface.co/deepseek-ai/DeepSeek-V2-Lite-Chat/blob/main/config.json#L42-L43
-            if (model.arch == LLM_ARCH_DEEPSEEK2 && mscale_all_dims != 1.0f) {
-                mscale = mscale_all_dims;
-            }
 
             cparams.yarn_attn_factor = get_mscale(factor, mscale) / get_mscale(factor, mscale_all_dims);
 
@@ -330,15 +308,6 @@ llama_context::llama_context(
 
     // the KV cache is shared with ctx_other, so follow its flash attention setting instead of resolving it here:
     // the probe disables it when the layers and the shared KV are on different devices, which breaks a quantized V cache
-    if (model.arch == LLM_ARCH_GEMMA4_ASSISTANT) {
-        const bool flash_attn_other = cparams.ctx_other->get_cparams().flash_attn;
-        if (!cparams.auto_fa && cparams.flash_attn != flash_attn_other) {
-            LLAMA_LOG_WARN("%s: flash_attn = %d does not match the context the KV cache is shared with, using %d\n",
-                    __func__, cparams.flash_attn, flash_attn_other);
-        }
-        cparams.flash_attn = flash_attn_other;
-        cparams.auto_fa    = false;
-    }
 
     cparams.fused_gdn_ar = true;
     cparams.fused_gdn_ch = true;
@@ -880,17 +849,7 @@ void llama_context::sched_reserve() {
         // TODO: the worst case graph is not always reached for `n_seqs > 1`
         //       need to implement a more robust mechanism that tries a few different inputs and analyzes the results
         ggml_cgraph * gf = nullptr;
-        switch (model.arch) {
-            case LLM_ARCH_KIMI_LINEAR:
-            case LLM_ARCH_MINIMAX_01:
-                // [TAG_RESERVE_DIAG_DECAY]
-                // the `inp_diag_decay` tensor size scales with `n_seq_tokens^2` which
-                // makes `n_seqs == 1` use more memory for the compute graph compared to `n_seqs > 1`
-                gf = graph_reserve(n_tokens, 1,      n_outputs_pp, mctx.get(), model.no_alloc());
-                break;
-            default:
-                gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(), model.no_alloc());
-        };
+;
 
         if (!gf) {
             throw std::runtime_error("failed to allocate compute pp buffers");
@@ -1437,24 +1396,6 @@ void llama_context::set_embeddings_layer_inp_dev(bool value) {
 }
 
 bool llama_context::supports_embd_row() const {
-    // the DFlash/DSpark decoder graphs read the device buffer
-    if (model.arch != LLM_ARCH_DFLASH) {
-        return false;
-    }
-
-    const ggml_tensor * src = cparams.ctx_other ? cparams.ctx_other->get_layer_inp_dev() : nullptr;
-    if (src == nullptr) {
-        return false;
-    }
-
-    // one of our backends must be able to read the buffer, e.g. not a draft on another GPU than the target output
-    ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(src->buffer);
-    for (const auto & backend : backends) {
-        if (ggml_backend_supports_buft(backend.get(), buft)) {
-            return true;
-        }
-    }
-
     return false;
 }
 
@@ -1906,30 +1847,6 @@ int llama_context::encode(const llama_batch_ext & batch_inp) {
     }
 
     // TODO: hacky solution
-    if (model.arch == LLM_ARCH_T5 && t_embd) {
-        //cross.t_embd = t_embd;
-
-        synchronize();
-
-        cross.n_embd = t_embd->ne[0];
-        cross.n_enc  = t_embd->ne[1];
-        cross.v_embd.resize(cross.n_embd*cross.n_enc);
-        memcpy(cross.v_embd.data(), embd.data, ggml_nbytes(t_embd));
-
-        const auto & batch = balloc->get_batch();
-
-        // remember the sequence ids used during the encoding - needed for cross attention later
-        cross.seq_ids_enc.resize(n_tokens);
-        for (uint32_t i = 0; i < n_tokens; i++) {
-            cross.seq_ids_enc[i].clear();
-
-            for (int s = 0; s < batch.n_seq_id[i]; s++) {
-                const llama_seq_id seq_id = batch.seq_id[i][s];
-
-                cross.seq_ids_enc[i].insert(seq_id);
-            }
-        }
-    }
 
     return 0;
 }
@@ -2444,10 +2361,6 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     bool has_embd_nextn = cparams.embeddings_nextn;
 
     // TODO: hacky enc-dec support
-    if (model.arch == LLM_ARCH_T5) {
-        has_logits = true;
-        has_embd   = true;
-    }
 
     size_t backend_float_count = 0;
     size_t backend_token_count = 0;
@@ -2712,51 +2625,11 @@ void llama_context::output_reorder() {
 //
 
 uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
-    uint32_t res;
-    if (model.arch == LLM_ARCH_KIMI_K3 || model.arch == LLM_ARCH_KIMI_K31 || model.arch == LLM_ARCH_GLM5_NEXT) {
-        // the n_tokens*40 budget below is exhausted at ubatch 3840
-        res = std::max<uint32_t>(n_tokens * 160, 64u * model.n_tensors());
-    } else if (model.arch == LLM_ARCH_HRM_TEXT) {
-        // the 128-slot looped graph needs roughly one stack per token budget
-        res = std::max<uint32_t>(n_tokens * 80, 64u * model.n_tensors());
-    } else if (model.arch == LLM_ARCH_QWEN3NEXT ||
-        model.arch == LLM_ARCH_KIMI_LINEAR ||
-        model.arch == LLM_ARCH_METIS16 ||
-        model.arch == LLM_ARCH_BAILINGMOE3 ||
-        model.arch == LLM_ARCH_QWEN35 ||
-        model.arch == LLM_ARCH_QWEN35MOE ||
-        model.arch == LLM_ARCH_CLEF ||
-        model.arch == LLM_ARCH_CLOVER_MOE ||
-        model.arch == LLM_ARCH_QWEN4EXP ||
-        model.arch == LLM_ARCH_DEEPSEEK4 ||
-        model.arch == LLM_ARCH_DEEPSEEK41 ||
-        model.arch == LLM_ARCH_XING4_0 ||
-        (model.arch == LLM_ARCH_DFLASH && model.hparams.dsv4_hc_mult > 0) ||
-        model.arch == LLM_ARCH_NANBEIGE ||
-        model.arch == LLM_ARCH_MINIMAX_01 ||
-        model.arch == LLM_ARCH_MINIMAX_M3 ||
-        model.arch == LLM_ARCH_HY_V4) {
-        res = std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
-    } else if (model.arch == LLM_ARCH_DFLASH && model.hparams.dflash_selector_rank > 0) {
-        // DFlash2's convolutions and selector are shape work rather than matmuls,
-        // so they cost ~8.6 nodes per tensor against ~5.9 for a plain DFlash draft
-        res = std::max<uint32_t>(1024u, 12u*model.n_tensors());
-    } else {
-        res = std::max<uint32_t>(1024u, 8u*model.n_tensors());
-        for (const auto & lora : model.loras) {
-            res += lora->get_n_nodes();
-        }
-    }
-
-    // every sampler builds n_outputs_max_per_seq chains, see llm_graph_context::build_sampling
+    uint32_t res = std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
     for (const auto & [seq_id, sampler] : sampling.samplers) {
         res += llama_sampler_backend_n_nodes(sampler) * cparams.n_outputs_max_per_seq;
     }
-
-    if (cparams.training) {
-        res *= 4;
-    }
-
+    if (cparams.training) res *= 4;
     return res;
 }
 
@@ -4297,10 +4170,6 @@ llama_context * llama_init_from_model(
         return nullptr;
     }
 
-    if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && model->arch == LLM_ARCH_GROK) {
-        LLAMA_LOG_WARN("%s: flash_attn is not compatible with Grok - forcing off\n", __func__);
-        params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
-    }
 
     if (model->split_mode() == LLAMA_SPLIT_MODE_TENSOR) {
         if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO) {
@@ -4316,7 +4185,7 @@ llama_context * llama_init_from_model(
         }
     }
 
-    if ((model->hparams.is_mla() || model->arch == LLM_ARCH_DEEPSEEK4 || model->arch == LLM_ARCH_DEEPSEEK41) && params.type_k != params.type_v) {
+    if (model->hparams.is_mla() && params.type_k != params.type_v) {
         LLAMA_LOG_ERROR("%s: model does not support different K (%s) and V (%s) cache types\n", __func__, ggml_type_name(params.type_k), ggml_type_name(params.type_v));
         return nullptr;
     }
