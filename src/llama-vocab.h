@@ -176,7 +176,6 @@ struct llama_vocab {
     int find_bpe_rank(const std::string & token_left, const std::string & token_right) const;
     std::vector<std::string> get_bpe_merges() const;
 
-    std::vector<char> get_precompiled_charsmap() const;
 
     int32_t tokenize(
                    const char * text,
