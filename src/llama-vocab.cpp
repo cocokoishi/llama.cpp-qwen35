@@ -16,6 +16,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <forward_list>
+#include <queue>
 #include <limits>
 #include <set>
 #include <unordered_map>
