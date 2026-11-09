@@ -353,8 +353,6 @@ llama_context::llama_context(
     cparams.auto_fhc           = true;
 
     // only the indexer models build this mask, skip the probe for the others
-    cparams.fused_top_k_mask = true;
-    cparams.auto_ftkm        = hparams.indexer_top_k > 0;
 
     // with causal attention, the batch size is limited by the context size
     cparams.n_batch = cparams.causal_attn ? std::min(cparams.n_ctx, params.n_batch) : params.n_batch;
@@ -738,11 +736,6 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
         cparams.auto_fhc = false;
     }
 
-    if (cparams.auto_ftkm) {
-        LLAMA_LOG_INFO("%s: resolving fused top-k mask support:\n", func);
-        resolve(llm_fused_op_top_k_mask_probe, cparams.fused_top_k_mask);
-        cparams.auto_ftkm = false;
-    }
 }
 
 static int llama_graph_n_input_tensors(ggml_cgraph * gf) {
