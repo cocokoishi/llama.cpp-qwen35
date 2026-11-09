@@ -1516,9 +1516,6 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
         const std::string & raw_text,
         bool add_special,
         bool parse_special) const {
-        const std::string & raw_text,
-        bool add_special,
-        bool parse_special) const {
     GGML_ASSERT(tokenizer && "Tokenizer not initialized. Call llama_vocab::init_tokenizer() first.");
     std::vector<llama_token> output;
     std::forward_list<fragment_buffer_variant> fragment_buffer;
