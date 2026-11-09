@@ -75,8 +75,7 @@ bool llama_memory_status_is_fail(llama_memory_status status);
 // the interface for managing the memory context during batch processing
 // this interface is implemented per memory type. see:
 //   - llama_kv_cache_context
-//   - llama_kv_cache_iswa_context
-//   ...
+// //   ...
 //
 // the only method that should mutate the memory and the memory context is llama_memory_i::apply()
 struct llama_memory_context_i {
