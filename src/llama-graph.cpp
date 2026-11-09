@@ -1551,9 +1551,7 @@ ggml_tensor * llm_graph_context::build_ffn(
                     const float limit = hparams.swiglu_clamp_shexp[il];
                     constexpr float eps = 1e-6f;
                     if (limit > eps) {
-                        if (arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_DEEPSEEK41 || arch == LLM_ARCH_GLM5_NEXT || (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0)) {
-                            cur = ggml_swiglu_clamp(ctx0, cur, tmp, limit);
-                        } else {
+
                             tmp = ggml_clamp(ctx0, tmp, -limit, limit);
                             cb(tmp, "ffn_up_clamped", il);
                             ggml_tensor * gate_act = ggml_silu(ctx0, cur);
@@ -1561,7 +1559,7 @@ ggml_tensor * llm_graph_context::build_ffn(
                             gate_act = ggml_clamp(ctx0, gate_act, -INFINITY, limit);
                             cb(gate_act, "ffn_silu_clamped", il);
                             cur = ggml_mul(ctx0, gate_act, tmp);
-                        }
+                        
                         cb(cur, "ffn_swiglu_limited", il);
                         type_gate = LLM_FFN_SEQ;
                         break;
@@ -1662,10 +1660,6 @@ ggml_tensor * llm_graph_context::build_ffn(
 
     if (down) {
         cur = build_lora_mm(down, cur);
-        if (arch == LLM_ARCH_GLM4 || arch == LLM_ARCH_GLM4_MOE || arch == LLM_ARCH_JAIS2) {
-            // GLM4, GLM4_MOE, and JAIS2 have numerical issues with F16 accumulators
-            ggml_prec_set_acc(cur, GGML_PREC_BF16);
-        }
     }
 
     if (down_b) {
@@ -1815,14 +1809,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     // llama4 doesn't have exp_probs_b, and sigmoid is only used after top_k
     // see: https://github.com/meta-llama/llama-models/blob/699a02993512fb36936b1b0741e13c06790bcf98/models/llama4/moe.py#L183-L198
-    if (arch == LLM_ARCH_LLAMA4) {
-        selection_probs = logits;
-    }
 
-    if (arch == LLM_ARCH_GROVEMOE) {
-        selection_probs = ggml_sigmoid(ctx0, logits); // [n_expert, n_tokens]
-        cb(selection_probs, "ffn_moe_probs_biased", il);
-    }
 
     // select top n_group_used expert groups
     // https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/e815299b0bcbac849fa540c768ef21845365c9eb/modeling_deepseek.py#L440-L457
@@ -1857,14 +1844,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     }
     cb(selected_experts, "ffn_moe_topk", il);
 
-    if (arch == LLM_ARCH_GROVEMOE && n_expert != hparams.n_expert) {
-        // TODO: Use scalar div instead when/if implemented
-        ggml_tensor * f_sel = ggml_cast(ctx0, selected_experts, GGML_TYPE_F32);
-        selected_experts = ggml_cast(ctx0, ggml_scale(ctx0, f_sel, 1.0f / float(hparams.n_group_experts)), GGML_TYPE_I32);
-        probs = ggml_reshape_3d(ctx0, probs, 1, hparams.n_expert, n_tokens);
-    } else {
+
         probs = ggml_reshape_3d(ctx0, probs, 1, n_expert, n_tokens);
-    }
+    
 
     ggml_tensor * weights = ggml_get_rows(ctx0, probs, selected_experts); // [1, n_expert_used, n_tokens]
     cb(weights, "ffn_moe_weights", il);
@@ -1883,13 +1865,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         ggml_tensor * weights_sum = ggml_sum_rows(ctx0, weights); // [1, n_tokens]
         cb(weights_sum, "ffn_moe_weights_sum", il);
 
-        if (arch == LLM_ARCH_DEEPSEEK41) {
-            // model.py Gate.forward: weights / (sum + 1e-20); the sum can fall below the F16 clamp below
-            weights_sum = ggml_scale_bias(ctx0, weights_sum, 1.0f, 1e-20f);
-        } else {
+
             // Avoid division by zero, clamp to smallest number representable by F16
             weights_sum = ggml_clamp(ctx0, weights_sum, 6.103515625e-5, INFINITY);
-        }
+        
         cb(weights_sum, "ffn_moe_weights_sum_clamped", il);
 
         weights = ggml_div(ctx0, weights, weights_sum); // [n_expert_used, n_tokens]
@@ -1988,9 +1967,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                         const float limit = hparams.swiglu_clamp_exp[il];
                         constexpr float eps = 1e-6f;
                         if (limit > eps) {
-                            if (arch == LLM_ARCH_MAPLE || arch == LLM_ARCH_DEEPSEEK4 || arch == LLM_ARCH_DEEPSEEK41 || arch == LLM_ARCH_GLM5_NEXT || (arch == LLM_ARCH_DFLASH && hparams.dsv4_hc_mult > 0) || arch == LLM_ARCH_HY_V4) {
-                                cur = ggml_swiglu_clamp(ctx0, cur, up, limit);
-                            } else {
+
                                 up = ggml_clamp(ctx0, up, -limit, limit);
                                 cb(up, "ffn_moe_up_clamped", il);
                                 ggml_tensor * gate_act = ggml_silu(ctx0, cur);
@@ -1998,7 +1975,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                                 gate_act = ggml_clamp(ctx0, gate_act, -INFINITY, limit);
                                 cb(gate_act, "ffn_moe_silu_clamped", il);
                                 cur = ggml_mul(ctx0, gate_act, up);
-                            }
+                            
                             cb(cur, "ffn_moe_swiglu_limited", il);
                             break;
                         }
@@ -2070,10 +2047,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         //       ref: https://github.com/ggml-org/llama.cpp/pull/30656#issuecomment-6269597922
         llm_graph_amax_src1 amax_src1 = { nullptr, nullptr };
 
-        if (arch == LLM_ARCH_MISTRAL4 || arch == LLM_ARCH_MELLUM || arch == LLM_ARCH_FLINT || arch == LLM_ARCH_LAGUNA) {
-            amax_src1 = build_amax_src1_f16(cur);
-            cur = amax_src1.res;
-        }
 
         ggml_tensor * experts = build_lora_mm_id(down_exps, cur, ids, down_exps_s, mm_ids, cached); // [n_embd, n_expert_used, n_tokens]
         //ggml_prec_set_src(experts, GGML_PREC_BF16, 1); // (see TODO above)
@@ -2609,18 +2582,6 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         ggml_prec_set_acc(kq, GGML_PREC_BF16);
 
-        if (model.arch == LLM_ARCH_GROK) {
-            // need to do the following:
-            // multiply by attn_output_multiplier
-            // and then :
-            // kq = 30 * tanh(kq / 30)
-            // before the softmax below
-
-            kq = ggml_tanh(ctx0, ggml_scale(ctx0, kq, hparams.f_attn_out_scale / hparams.f_attn_logit_softcapping));
-            cb(kq, "kq_tanh", il);
-            kq = ggml_scale(ctx0, kq, hparams.f_attn_logit_softcapping);
-            cb(kq, "kq_scaled", il);
-        }
 
         if (hparams.attn_soft_cap) {
             kq = ggml_scale(ctx0, kq, 1.0f / hparams.f_attn_logit_softcapping);
@@ -2857,16 +2818,9 @@ ggml_tensor * llm_graph_context::build_attn(
     }
 
     if (wo) {
-        if (arch == LLM_ARCH_GLM4 || arch == LLM_ARCH_GLM4_MOE || arch == LLM_ARCH_JAIS2) {
-            // GLM4, GLM4_MOE, and JAIS2 have numerical issues with F16 accumulators
-            cur = build_lora_mm(wo, cur);
-            ggml_prec_set_acc(cur, GGML_PREC_BF16);
-            if (wo_s) {
-                cur = ggml_mul(ctx0, cur, wo_s);
-            }
-        } else {
+
             cur = build_lora_mm(wo, cur, wo_s);
-        }
+        
     }
 
     if (wo_b) {
@@ -2946,16 +2900,9 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (wo) {
-        if (arch == LLM_ARCH_GLM4 || arch == LLM_ARCH_GLM4_MOE) {
-            // GLM4 and GLM4_MOE have numerical issues with F16 accumulators
-            cur = build_lora_mm(wo, cur);
-            ggml_prec_set_acc(cur, GGML_PREC_BF16);
-            if (wo_s) {
-                cur = ggml_mul(ctx0, cur, wo_s);
-            }
-        } else {
+
             cur = build_lora_mm(wo, cur, wo_s);
-        }
+        
     }
 
     if (wo_b) {
@@ -3365,9 +3312,6 @@ void llm_graph_context::build_pooling(
                 }
 
                 // softmax for qwen3 reranker
-                if (arch == LLM_ARCH_QWEN3 || arch == LLM_ARCH_QWEN3VL) {
-                    cur = ggml_soft_max(ctx0, cur);
-                }
             } break;
         default:
             {
