@@ -6,7 +6,13 @@ llama_add_compile_flags()
 
 # llama
 
-file(GLOB LLAMA_MODELS_SOURCES "models/*.cpp")
+# Qwen3.5-only build: keep the shared Gated DeltaNet graph builder.
+# Do not modify GGML kernels/backends; quantization and runtime remain upstream-identical.
+set(LLAMA_MODELS_SOURCES
+    models/delta-net-base.cpp
+    models/qwen35.cpp
+    models/qwen35moe.cpp
+)
 
 set(LLAMA_CORE_SOURCES
     llama.cpp
