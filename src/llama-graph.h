@@ -1085,23 +1085,18 @@ struct llm_graph_context {
 
 
 
-;
 
     // ggml_top_k_mask with top_k viewed in the row layout of kq_mask, see ggml.h
-;
 
     // kq_mask with only the cells named by top_k left visible, for sparse attention
-;
 
 
 
     // note: if k_cur or v_cur are not provided, they will not be stored in the memory
-;
 
 
     // note: if k_cur is not provided, it will not be stored in the memory
     // note: the K cache is used as V (MLA-style attention)
-;
 
     llm_graph_input_attn_cross * build_attn_inp_cross() const;
 
