@@ -1,0 +1,180 @@
+name: Qwen3.5-only build and runtime regression
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-cpu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout (including upstream baseline commit)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure reduced build
+        run: |
+          cmake -S . -B build-qwen35 -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_NATIVE=OFF -DGGML_CCACHE=OFF -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_SERVER=ON
+      - name: Compile reduced CLI/server/bench
+        run: |
+          /usr/bin/time -v cmake --build build-qwen35 --parallel 2 \
+            --target llama-completion llama-server llama-bench
+          test -x build-qwen35/bin/llama-completion
+          test -x build-qwen35/bin/llama-server
+          test -x build-qwen35/bin/llama-bench
+      - name: Check no other model implementations are built
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          files = sorted(p.name for p in Path("src/models").glob("*.cpp"))
+          expected = ["delta-net-base.cpp", "qwen35.cpp", "qwen35moe.cpp"]
+          assert files == expected, (files, expected)
+          print("Remaining implementation files:", files)
+          PY
+      - name: Download real Qwen3.5 0.8B GGUF and verify SHA256
+        run: |
+          curl --fail --location --retry 4 --retry-delay 5 \
+            --output qwen35.gguf \
+            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf"
+          echo "444406ddd926550c724ec18d5120a9d40ded44908a063b0e66e9a7e5464c652c  qwen35.gguf" | sha256sum -c -
+      - name: Reduced build real inference (greedy, fixed seed)
+        run: |
+          timeout 180 build-qwen35/bin/llama-completion \
+            -m qwen35.gguf -p "The capital of France is" -n 24 -c 512 \
+            -t 2 --seed 42 --temp 0 -no-cnv \
+            > qwen35-output.txt 2> qwen35-log.txt
+          test -s qwen35-output.txt
+          grep -qi "Paris" qwen35-output.txt
+          cat qwen35-output.txt
+          tail -n 20 qwen35-log.txt
+      - name: Reject foreign GGUF model architecture
+        run: |
+          python3 - <<'PY'
+          import shutil, mmap
+          shutil.copyfile("qwen35.gguf", "foreign.gguf")
+          with open("foreign.gguf", "r+b") as f:
+              with mmap.mmap(f.fileno(), 0) as mm:
+                  pos = mm.find(b"qwen35", 0, 1024 * 1024)
+                  assert pos >= 0, "GGUF qwen35 architecture metadata not found"
+                  mm[pos:pos + 6] = b"gemma3"
+          PY
+          if timeout 120 build-qwen35/bin/llama-completion \
+            -m foreign.gguf -p "test" -n 1 -c 512 -t 2 -no-cnv \
+            > foreign-output.txt 2> foreign-log.txt; then
+            echo "ERROR: foreign architecture was accepted" >&2
+            exit 1
+          fi
+          grep -qi "unsupported model architecture" foreign-log.txt
+      - name: Build unmodified original for token-level regression
+        run: |
+          git worktree add --detach original "7d7f0287530bc8981690f361d8c1627dbae1c99a"
+          cmake -S original -B build-original -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_NATIVE=OFF -DGGML_CCACHE=OFF -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_SERVER=OFF
+          /usr/bin/time -v cmake --build build-original --parallel 2 \
+            --target llama-completion llama-bench
+      - name: Assert original vs reduced tokens are exactly equal
+        run: |
+          timeout 180 build-original/bin/llama-completion \
+            -m qwen35.gguf -p "The capital of France is" -n 24 -c 512 \
+            -t 2 --seed 42 --temp 0 -no-cnv \
+            > original-output.txt 2> original-log.txt
+          diff -u original-output.txt qwen35-output.txt
+          echo "PASS: identical deterministic output for same GGUF and CPU options"
+      - name: Benchmark unchanged GGML hot path in both builds
+        run: |
+          timeout 300 build-original/bin/llama-bench -m qwen35.gguf -p 64 -n 16 -r 2 -t 2 | tee bench-original.txt
+          timeout 300 build-qwen35/bin/llama-bench -m qwen35.gguf -p 64 -n 16 -r 2 -t 2 | tee bench-qwen35.txt
+          echo "CPU benchmarks above are observations, not a noisy hard speed gate."
+      - name: Upload regression diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen35-regression
+          if-no-files-found: ignore
+          path: |
+            *-output.txt
+            *-log.txt
+            bench-*.txt
+
+  full-project-build:
+    name: Full CMake build
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure all default executable targets
+        run: |
+          cmake -S . -B build-full -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_NATIVE=OFF -DGGML_CCACHE=OFF \
+            -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_UI=OFF \
+            -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_TOOLS=ON \
+            -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_EXAMPLES=ON \
+            -DLLAMA_BUILD_APP=ON
+      - name: Build the full project, not just selected inference targets
+        run: |
+          /usr/bin/time -v cmake --build build-full --parallel 2
+      - name: Check full-build binaries and discover CTest tests
+        run: |
+          test -x build-full/bin/llama-completion
+          test -x build-full/bin/llama-server
+          test -x build-full/bin/llama-bench
+          test -x build-full/bin/llama-quantize
+          ctest --test-dir build-full -N
+
+
+  compile-time-comparison:
+    name: Fair clean compile-time comparison (libllama)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Prepare identical original and Qwen3.5-only library configurations
+        run: |
+          git worktree add --detach original 7d7f0287530bc8981690f361d8c1627dbae1c99a
+          for source in original .; do
+            out="build-fair-original"
+            if [ "$source" = "." ]; then out="build-fair-qwen35"; fi
+            cmake -S "$source" -B "$out" -DCMAKE_BUILD_TYPE=Release \
+              -DGGML_NATIVE=OFF -DGGML_CCACHE=OFF \
+              -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_COMMON=OFF \
+              -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_TESTS=OFF \
+              -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
+              -DLLAMA_BUILD_APP=OFF
+          done
+      - name: Time fresh builds of exactly the same libllama target
+        run: |
+          python3 - <<'PY'
+          import json, subprocess, time
+          results = {}
+          for label, directory in [("original", "build-fair-original"), ("qwen35-only", "build-fair-qwen35")]:
+              start = time.perf_counter()
+              subprocess.run(["cmake", "--build", directory, "--parallel", "2", "--target", "llama"], check=True)
+              results[label] = round(time.perf_counter() - start, 2)
+          print("Clean identical-target elapsed seconds:", json.dumps(results, sort_keys=True))
+          print("Compilation improvement:", round(100 * (1 - results["qwen35-only"] / results["original"]), 2), "%")
+          assert results["original"] > 0 and results["qwen35-only"] > 0
+          with open("compile-times.json", "w") as out:
+              json.dump(results, out, indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clean-libllama-build-times
+          path: compile-times.json
