@@ -848,8 +848,7 @@ void llama_context::sched_reserve() {
     {
         // TODO: the worst case graph is not always reached for `n_seqs > 1`
         //       need to implement a more robust mechanism that tries a few different inputs and analyzes the results
-        ggml_cgraph * gf = nullptr;
-;
+        ggml_cgraph * gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get(), model.no_alloc());
 
         if (!gf) {
             throw std::runtime_error("failed to allocate compute pp buffers");
