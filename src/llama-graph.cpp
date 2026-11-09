@@ -1474,7 +1474,6 @@ ggml_tensor * llm_graph_context::build_ffn(
      llm_ffn_op_type   type_op,
    llm_ffn_gate_type   type_gate,
                  int   il) const {
-    const llm_arch arch = model.arch;
 
     // NVFP4 support is currently restricted to
     // 1) LORA absence (*_s would be applied after LORA residual, which is incorrect)
@@ -2762,7 +2761,6 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * v_mla, // TODO: remove
             float     kq_scale,
             int       il) const {
-    const llm_arch arch = model.arch;
 
     GGML_ASSERT(v_mla == nullptr);
 
@@ -2870,7 +2868,6 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * v_mla,
             float     kq_scale,
             int       il) const {
-    const llm_arch arch = model.arch;
 
     // these nodes are added to the graph together so that they are not reordered
     // by doing so, the number of splits in the graph is reduced
@@ -3231,7 +3228,6 @@ void llm_graph_context::build_pooling(
         ggml_tensor * cls_out,
         ggml_tensor * cls_out_b,
         ggml_tensor * cls_norm) const {
-    const llm_arch arch = model.arch;
 
     if (!cparams.embeddings) {
         // a graph without logits still computes t_embd, so that it is never empty
