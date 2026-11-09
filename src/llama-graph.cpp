@@ -1753,10 +1753,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
          ggml_tensor * selected_experts_in,
          ggml_tensor * post_exp_norm,
                float   post_exp_norm_eps) const {
-    const llm_arch arch = model.arch;
     const int64_t n_embd   = cur->ne[0];
     const int64_t n_tokens = cur->ne[1];
-    const bool weight_before_ffn = arch == LLM_ARCH_LLAMA4; // for llama4, we apply the sigmoid-ed weights before the FFN
+    const bool weight_before_ffn = false;
 
     ggml_tensor * logits = nullptr;
 
